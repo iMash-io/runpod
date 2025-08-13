@@ -1,23 +1,14 @@
+# rp_handler.py
 import asyncio
-import os
-import runpod
+import base64
 import json
+import threading
+import queue
+import runpod
 
 from app.livekit_worker import Session
 
-# Payload schema (example):
-# {
-#   "input": {
-#     "livekit_url": "wss://your.livekit.server",
-#     "token": "<join token>",
-#     "driver_identity": "caller-123",        # or null
-#     "track_sid": null,                      # optional precise track
-#     "source_image_b64": "<base64>",
-#     "width": 512, "height": 512, "fps": 24,
-#     "backend": "torch"                      # "torch" or "trt"
-#   }
-# }
-
+# ----- async business logic -----
 async def run_session(job):
     p = job["input"]
     sess = Session(
@@ -39,25 +30,33 @@ async def run_session(job):
     finally:
         yield {"status": "ended"}
 
-def generator_handler(job):
-    # Wrap the asyncio task so RunPod can stream logs/chunks
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    async def _run():
-        async for chunk in run_session(job):
-            yield chunk
-    gen = _run()
+# ----- sync handler that streams via a thread-safe queue -----
+def handler(job):
+    q: "queue.Queue[object | None]" = queue.Queue()
 
-    # Drive the async generator synchronously for RunPod
+    def runner():
+        async def produce():
+            try:
+                async for chunk in run_session(job):
+                    q.put(chunk)
+            except Exception as e:
+                q.put({"status": "error", "message": str(e)})
+            finally:
+                q.put(None)
+
+        # run our own loop in this thread (no interference with RunPod's loop)
+        asyncio.run(produce())
+
+    threading.Thread(target=runner, daemon=True).start()
+
     while True:
-        try:
-            nxt = loop.run_until_complete(gen.__anext__())
-            yield nxt
-        except StopAsyncIteration:
+        item = q.get()
+        if item is None:
             break
+        yield item
 
 if __name__ == "__main__":
     runpod.serverless.start({
-        "handler": generator_handler,
-        "return_aggregate_stream": True  # stream results also available at /run
+        "handler": handler,
+        "return_aggregate_stream": True
     })
