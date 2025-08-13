@@ -17,7 +17,7 @@ RUN pip install "torch==2.3.0+cu121" "torchvision==0.18.0" "torchaudio==2.3.0" \
 
 # LiveKit + RunPod + image libs
 RUN pip install runpod==1.6.2 opencv-python-headless==4.10.0.84 numpy==1.26.4 Pillow==10.4.0
-RUN pip install "livekit==0.18.5" "livekit-agents==1.2.3"  # python rtc + agents
+RUN pip install "livekit==1.0.12" "livekit-agents==1.2.5"
 
 # Clone LivePortrait
 WORKDIR /app
