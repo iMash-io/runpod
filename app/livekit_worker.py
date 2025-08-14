@@ -1,7 +1,6 @@
 # app/livekit_worker.py
 import asyncio
 import base64
-import os
 import time
 from typing import Optional
 
@@ -9,12 +8,6 @@ import numpy as np
 from livekit import rtc
 
 from .liveportrait_node import LivePortraitNode
-
-
-def _rgb_to_i420_bytes(rgb: np.ndarray) -> bytes:
-    import cv2
-    yuv = cv2.cvtColor(rgb, cv2.COLOR_RGB2YUV_I420)
-    return yuv.tobytes()
 
 
 class Session:
@@ -77,7 +70,6 @@ class Session:
             )
 
             drv_bgr = rgb[..., ::-1]  # RGB->BGR for OpenCV/LivePortrait
-
             out_rgb = self.node.animate(drv_bgr)
 
             if out_rgb.shape[1] != self.out_width or out_rgb.shape[0] != self.out_height:
@@ -87,21 +79,23 @@ class Session:
                     interpolation=cv2.INTER_AREA
                 )
 
-            # Push as I420 to LiveKit
-            i420 = _rgb_to_i420_bytes(out_rgb)
-            out_vf = rtc.VideoFrame(
-                self.out_width, self.out_height, rtc.VideoBufferType.I420, i420
+            # Push to LiveKit using SDK conversion to I420 (fixes green frame issue)
+            vf_rgb_out = rtc.VideoFrame(
+                self.out_width,
+                self.out_height,
+                rtc.VideoBufferType.RGB24,
+                out_rgb.tobytes()
             )
-            self.source.capture_frame(out_vf)
+            self.source.capture_frame(vf_rgb_out.convert(rtc.VideoBufferType.I420))
 
             next_t += frame_period
             await asyncio.sleep(max(0, next_t - time.perf_counter()))
 
         await self._cleanup()
-    
+
     async def _wait_for_driver_video_track(self) -> rtc.RemoteVideoTrack:
         ready = asyncio.Future()
-    
+
         def on_published(pub: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
             if pub.kind != rtc.TrackKind.KIND_VIDEO:
                 return
@@ -110,7 +104,7 @@ class Session:
             if self.driver_identity and participant.identity != self.driver_identity:
                 return
             pub.set_subscribed(True)  # ensure subscription
-    
+
         def on_subscribed(track: rtc.Track, pub: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
             if track.kind == rtc.TrackKind.KIND_VIDEO:
                 if self.track_sid and pub.sid != self.track_sid:
@@ -119,19 +113,18 @@ class Session:
                     return
                 if not ready.done():
                     ready.set_result(track)  # RemoteVideoTrack
-    
+
         self.room.on("track_published", on_published)
         self.room.on("track_subscribed", on_subscribed)
-    
-        # Consider already-present publications and already-subscribed tracks
+
+        # Check already-present publications
         for p in list(self.room.remote_participants.values()):
-            # Python SDK exposes publications here:
-            for pub in getattr(p, "track_publications", {}).values():  # <-- not video_tracks
+            for pub in getattr(p, "track_publications", {}).values():  # correct property
                 if pub.kind == rtc.TrackKind.KIND_VIDEO:
                     on_published(pub, p)
                     if getattr(pub, "track", None) is not None:
                         on_subscribed(pub.track, pub, p)
-    
+
         return await ready  # type: ignore[return-value]
 
     async def _cleanup(self):
