@@ -1,4 +1,4 @@
-# --- top of file ---
+# app/livekit_worker.py
 import asyncio
 import base64
 import os
@@ -18,9 +18,17 @@ def _rgb_to_i420_bytes(rgb: np.ndarray) -> bytes:
 
 
 class Session:
-    def __init__(self, url: str, token: str, driver_identity: Optional[str],
-                 track_sid: Optional[str], out_width: int, out_height: int,
-                 fps: int, backend: str):
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        driver_identity: Optional[str],
+        track_sid: Optional[str],
+        out_width: int,
+        out_height: int,
+        fps: int,
+        backend: str
+    ):
         self.url = url
         self.token = token
         self.driver_identity = driver_identity
@@ -39,6 +47,9 @@ class Session:
         img_bytes = base64.b64decode(source_image_b64)
         nparr = np.frombuffer(img_bytes, np.uint8)
         src_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # Prepare the source portrait once
+        self.node.set_source(src_bgr)
 
         self.room = rtc.Room()
         await self.room.connect(self.url, self.token)
@@ -67,14 +78,20 @@ class Session:
 
             drv_bgr = rgb[..., ::-1]  # RGB->BGR for OpenCV/LivePortrait
 
-            out_rgb = self.node.animate(src_bgr, drv_bgr)
+            out_rgb = self.node.animate(drv_bgr)
 
             if out_rgb.shape[1] != self.out_width or out_rgb.shape[0] != self.out_height:
-                out_rgb = cv2.resize(out_rgb, (self.out_width, self.out_height), interpolation=cv2.INTER_AREA)
+                out_rgb = cv2.resize(
+                    out_rgb,
+                    (self.out_width, self.out_height),
+                    interpolation=cv2.INTER_AREA
+                )
 
             # Push as I420 to LiveKit
             i420 = _rgb_to_i420_bytes(out_rgb)
-            out_vf = rtc.VideoFrame(self.out_width, self.out_height, rtc.VideoBufferType.I420, i420)
+            out_vf = rtc.VideoFrame(
+                self.out_width, self.out_height, rtc.VideoBufferType.I420, i420
+            )
             self.source.capture_frame(out_vf)
 
             next_t += frame_period
