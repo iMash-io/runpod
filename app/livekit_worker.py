@@ -98,32 +98,41 @@ class Session:
             await asyncio.sleep(max(0, next_t - time.perf_counter()))
 
         await self._cleanup()
-
+    
     async def _wait_for_driver_video_track(self) -> rtc.RemoteVideoTrack:
         ready = asyncio.Future()
-
-        def handler_publication(pub: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
-            if pub.kind == rtc.TrackKind.KIND_VIDEO:
+    
+        def on_published(pub: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            if pub.kind != rtc.TrackKind.KIND_VIDEO:
+                return
+            if self.track_sid and pub.sid != self.track_sid:
+                return
+            if self.driver_identity and participant.identity != self.driver_identity:
+                return
+            pub.set_subscribed(True)  # ensure subscription
+    
+        def on_subscribed(track: rtc.Track, pub: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            if track.kind == rtc.TrackKind.KIND_VIDEO:
                 if self.track_sid and pub.sid != self.track_sid:
                     return
                 if self.driver_identity and participant.identity != self.driver_identity:
                     return
-                pub.set_subscribed(True)
-
-        def handler_subscribed(track: rtc.Track, pub: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
-            if track.kind == rtc.TrackKind.KIND_VIDEO and not ready.done():
-                ready.set_result(track)
-
-        self.room.on("track_published", handler_publication)
-        self.room.on("track_subscribed", handler_subscribed)
-
-        # kick existing pubs
-        for p in self.room.remote_participants.values():
-            for pub in p.video_tracks.values():
-                handler_publication(pub, p)
-
-        remote = await ready
-        return remote  # type: ignore
+                if not ready.done():
+                    ready.set_result(track)  # RemoteVideoTrack
+    
+        self.room.on("track_published", on_published)
+        self.room.on("track_subscribed", on_subscribed)
+    
+        # Consider already-present publications and already-subscribed tracks
+        for p in list(self.room.remote_participants.values()):
+            # Python SDK exposes publications here:
+            for pub in getattr(p, "track_publications", {}).values():  # <-- not video_tracks
+                if pub.kind == rtc.TrackKind.KIND_VIDEO:
+                    on_published(pub, p)
+                    if getattr(pub, "track", None) is not None:
+                        on_subscribed(pub.track, pub, p)
+    
+        return await ready  # type: ignore[return-value]
 
     async def _cleanup(self):
         try:
