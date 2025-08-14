@@ -14,6 +14,7 @@ class LivePortraitNode:
     def __init__(self, device="cuda", size=512, backend="torch"):
         self.device = device
         self.size = size
+        self.backend = backend
 
         # import LivePortrait (mounted at /app/LivePortrait)
         lp_root = "/app/LivePortrait"
@@ -31,7 +32,7 @@ class LivePortraitNode:
         self.get_rotation_matrix = get_rotation_matrix
         self.LivePortraitWrapper = LivePortraitWrapper
 
-        # configs (close all disk writes/pasteback for streaming)
+        # ---- configs for streaming ----
         self.infer_cfg = self.InferenceConfig()
         self.infer_cfg.device_id = 0
         self.infer_cfg.flag_do_crop = True
@@ -41,20 +42,24 @@ class LivePortraitNode:
         self.infer_cfg.flag_relative = True
 
         self.crop_cfg = self.CropConfig()
-        self.wrapper = self.LivePortraitWrapper(cfg=self.infer_cfg)
+
+        # ⚠️ IMPORTANT: use positional arg to be compatible with both signatures
+        # Some versions: __init__(self, cfg: InferenceConfig)
+        # Others:       __init__(self, inference_cfg: InferenceConfig)
+        self.wrapper = self.LivePortraitWrapper(self.infer_cfg)
         self.cropper = self.Cropper(crop_cfg=self.crop_cfg, device_id=0)
 
         # state
         self._reset_state()
 
     def _reset_state(self):
-        self.f_s = None           # 3D appearance feature
-        self.x_s = None           # transformed source kp (BxNx3)
-        self.x_c_s = None         # canonical source kp
-        self.x_s_info = None      # source kp info dict
-        self.R_s = None           # source rotation (Bx3x3)
-        self.R_d_0 = None         # first driving rot (Bx3x3)
-        self.x_d_0_info = None    # first driving kp info
+        self.f_s = None
+        self.x_s = None
+        self.x_c_s = None
+        self.x_s_info = None
+        self.R_s = None
+        self.R_d_0 = None
+        self.x_d_0_info = None
 
     @staticmethod
     def _center_square_resize_bgr(img_bgr: np.ndarray, size: int) -> np.ndarray:
@@ -71,14 +76,14 @@ class LivePortraitNode:
         """Prepare source once (crop -> prepare -> kp -> features)."""
         # Crop to face using built-in cropper (expects RGB)
         src_rgb = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2RGB)
-        crop_info = self.cropper.crop_single_image(src_rgb)  # may raise if no face
+        crop_info = self.cropper.crop_single_image(src_rgb)  # raises if no face
 
         # 256x256 tensor (1x3xHxW) for networks
         I_s = self.wrapper.prepare_source(crop_info["img_crop_256x256"])
 
         # kp info & rotations
         self.x_s_info = self.wrapper.get_kp_info(I_s)
-        self.x_c_s = self.x_s_info["kp"]                     # canonical kp
+        self.x_c_s = self.x_s_info["kp"]
         self.R_s = self.get_rotation_matrix(
             self.x_s_info["pitch"], self.x_s_info["yaw"], self.x_s_info["roll"]
         )
@@ -116,7 +121,7 @@ class LivePortraitNode:
             self.R_d_0 = R_d_i
             self.x_d_0_info = x_d_i_info
 
-        # Relative motion (same as LivePortraitPipeline.execute)
+        # Relative motion (same math as LivePortraitPipeline.execute)
         if self.infer_cfg.flag_relative:
             R_new = (R_d_i @ self.R_d_0.permute(0, 2, 1)) @ self.R_s
             delta_new = self.x_s_info["exp"] + (x_d_i_info["exp"] - self.x_d_0_info["exp"])
